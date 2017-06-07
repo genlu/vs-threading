@@ -89,7 +89,7 @@ using System.Threading.Tasks;
 using Microsoft.VisualStudio.Threading;
 
 class Test {
-    async Task<int> F() {
+    async Task<int> FAsync() {
         AsyncSemaphore lck = null;
         using (await lck.EnterAsync())
         {

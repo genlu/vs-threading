@@ -51,26 +51,25 @@
                     {
                         var document = context.Document;
                         var root = await document.GetSyntaxRootAsync(ct).ConfigureAwait(false);
-                        var usingStatement = root.FindNode(diagnostic.Location.SourceSpan).FirstAncestorOrSelf<UsingStatementSyntax>();
-                        var originalMethod = usingStatement.FirstAncestorOrSelf<MethodDeclarationSyntax>();
-                        var awaitExpression = SyntaxFactory.AwaitExpression(
-                            SyntaxFactory.ParenthesizedExpression(usingStatement.Expression));
-                        var modifiedUsingStatement = usingStatement.WithExpression(awaitExpression)
-                            .WithAdditionalAnnotations(Simplifier.Annotation);
-                        var modifiedMethod = originalMethod.ReplaceNode(usingStatement, modifiedUsingStatement);
-                        if (!modifiedMethod.Modifiers.Contains(SyntaxFactory.Token(SyntaxKind.AsyncKeyword)))
-                        {
-                            SemanticModel semanticModel = await document.GetSemanticModelAsync(ct);
-                            var originalMethodSymbol = semanticModel.GetDeclaredSymbol(originalMethod);
-                            if (semanticModel.TryGetSpeculativeSemanticModelForMethodBody(diagnostic.Location.SourceSpan.Start, modifiedMethod, out semanticModel))
-                            {
-                                (document, modifiedMethod) = await modifiedMethod.MakeMethodAsync(document, ct);
-                            }
-                        }
+                        var method = root.FindNode(diagnostic.Location.SourceSpan).FirstAncestorOrSelf<MethodDeclarationSyntax>();
 
-                        var modifiedDocument = document.WithSyntaxRoot(
-                            root.ReplaceNode(originalMethod, modifiedMethod));
-                        return modifiedDocument.Project.Solution;
+                        (document, method) = await Utils.UpdateDocumentAsync(
+                            document,
+                            method,
+                            m =>
+                            {
+                                root = m.SyntaxTree.GetRoot(ct);
+                                var usingStatement = root.FindNode(diagnostic.Location.SourceSpan).FirstAncestorOrSelf<UsingStatementSyntax>();
+                                var awaitExpression = SyntaxFactory.AwaitExpression(
+                                    SyntaxFactory.ParenthesizedExpression(usingStatement.Expression));
+                                var modifiedUsingStatement = usingStatement.WithExpression(awaitExpression)
+                                    .WithAdditionalAnnotations(Simplifier.Annotation);
+                                return m.ReplaceNode(usingStatement, modifiedUsingStatement);
+                            },
+                            ct);
+                        (document, method) = await method.MakeMethodAsync(document, ct);
+
+                        return document.Project.Solution;
                     },
                     VSTHRD107AwaitTaskWithinUsingExpressionAnalyzer.Id),
                 diagnostic);

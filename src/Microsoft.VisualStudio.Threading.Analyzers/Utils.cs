@@ -364,16 +364,12 @@ namespace Microsoft.VisualStudio.Threading.Analyzers
                 return (document, method);
             }
 
-            // Bookmark our method so we can find it later.
-            SyntaxAnnotation methodBookmark;
-            (methodBookmark, document, method) = await BookmarkSyntaxAsync(document, method, cancellationToken);
-
             var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
-            var originalMethodSymbol = semanticModel.GetDeclaredSymbol(method);
+            var methodSymbol = semanticModel.GetDeclaredSymbol(method);
 
             bool hasReturnValue;
             TypeSyntax returnType = method.ReturnType;
-            if (!HasAsyncCompatibleReturnType(originalMethodSymbol))
+            if (!HasAsyncCompatibleReturnType(methodSymbol))
             {
                 hasReturnValue = (method.ReturnType as PredefinedTypeSyntax)?.Keyword.Kind() != SyntaxKind.VoidKeyword;
 
@@ -406,23 +402,28 @@ namespace Microsoft.VisualStudio.Threading.Analyzers
                 hasReturnValue,
                 method.ReturnType != returnType);
 
-            method = method
-                .WithBody(updatedBody)
-                .AddModifiers(SyntaxFactory.Token(SyntaxKind.AsyncKeyword))
-                .WithReturnType(returnType);
-
             // Apply the changes to the document, and null out stale data.
-            (document, method) = await UpdateDocumentAsync(document, method, cancellationToken);
+            (document, method) = await UpdateDocumentAsync(
+                document,
+                method,
+                m => m
+                    .WithBody(updatedBody)
+                    .AddModifiers(SyntaxFactory.Token(SyntaxKind.AsyncKeyword))
+                    .WithReturnType(returnType),
+                cancellationToken);
             semanticModel = null;
+            methodSymbol = null;
 
             // Rename the method to have an Async suffix if necessary.
             if (!method.Identifier.ValueText.EndsWith(VSTHRD200UseAsyncNamingConventionAnalyzer.MandatoryAsyncSuffix, StringComparison.Ordinal))
             {
                 string newName = method.Identifier.ValueText + VSTHRD200UseAsyncNamingConventionAnalyzer.MandatoryAsyncSuffix;
 
+                semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+                methodSymbol = semanticModel.GetDeclaredSymbol(method, cancellationToken);
                 var solution = await Renamer.RenameSymbolAsync(
                     document.Project.Solution,
-                    originalMethodSymbol,
+                    methodSymbol,
                     newName,
                     document.Project.Solution.Workspace.Options,
                     cancellationToken).ConfigureAwait(false);
@@ -432,19 +433,24 @@ namespace Microsoft.VisualStudio.Threading.Analyzers
             return (document, method);
         }
 
-        internal static async Task<(Document, T)> UpdateDocumentAsync<T>(Document document, T syntaxNode, CancellationToken cancellationToken)
+        internal static async Task<(Document, T)> UpdateDocumentAsync<T>(Document document, T syntaxNode, Func<T, T> syntaxNodeTransform, CancellationToken cancellationToken)
             where T : SyntaxNode
         {
-            var bookmark = new SyntaxAnnotation();
-            syntaxNode = syntaxNode.WithAdditionalAnnotations(bookmark);
-            var root = await syntaxNode.SyntaxTree.GetRootAsync(cancellationToken).ConfigureAwait(false);
+            SyntaxAnnotation bookmark;
+            SyntaxNode root;
+            (bookmark, document, syntaxNode, root) = await BookmarkSyntaxAsync(document, syntaxNode, cancellationToken);
+
+            var newSyntaxNode = syntaxNodeTransform(syntaxNode);
+
+            root = root.ReplaceNode(syntaxNode, newSyntaxNode);
             document = document.WithSyntaxRoot(root);
             root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-            syntaxNode = (T)root.GetAnnotatedNodes(bookmark).Single();
-            return (document, syntaxNode);
+            newSyntaxNode = (T)root.GetAnnotatedNodes(bookmark).Single();
+
+            return (document, newSyntaxNode);
         }
 
-        internal static async Task<(SyntaxAnnotation, Document, T)> BookmarkSyntaxAsync<T>(Document document, T syntaxNode, CancellationToken cancellationToken)
+        internal static async Task<(SyntaxAnnotation, Document, T, SyntaxNode)> BookmarkSyntaxAsync<T>(Document document, T syntaxNode, CancellationToken cancellationToken)
             where T : SyntaxNode
         {
             var bookmark = new SyntaxAnnotation();
@@ -454,7 +460,7 @@ namespace Microsoft.VisualStudio.Threading.Analyzers
             root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
             syntaxNode = (T)root.GetAnnotatedNodes(bookmark).Single();
 
-            return (bookmark, document, syntaxNode);
+            return (bookmark, document, syntaxNode, root);
         }
 
         internal static NameSyntax QualifyName(IReadOnlyList<string> qualifiers, SimpleNameSyntax simpleName)
